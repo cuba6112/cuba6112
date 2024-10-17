@@ -34,8 +34,11 @@ pip install -r requirements.txt
 Running the Code
 1. Training the Agent
 
-Run the script to start training the agent:
-python dqn_snake.py
+Run either of the three script to start training the agent; read paper comparison.txt comparing the two different type of Neural Network:
+
+python dqn_snake.py --> This will train a model and play the Snake game using an Agent that learns through a Deep Q-Neural Network using Machine Learning.
+python doubledqn_snake.py --> This will train a model and play the Snake game using an Agent using a more complex double-deep Q-Neural Network using Machine Learning. 
+python qn_snake_game_ai.py ----> This will train a model and play the Snake game using an Agent using a more straightforward, less complex Q-Neural Network, which works well with CPU or GPU. 
 
 Watching the Trained Agent Play
 After training, the script will automatically have the agent play a game using the trained model.
@@ -58,7 +61,7 @@ reset(): Resets the game to the initial state.
 play_step(action): Executes a game step based on the agent's action.
 get_state(): Returns the current state representation for the agent.
 - Deep Q-Network Agent
-DQNAgent Class: Implements the agent that interacts with the environment and learns from experiences.
+DQNAgent Class: Implements the agent interacting with the environment and learning from experiences.
 Features:
 Neural Network: Uses a Dueling DQN architecture with two hidden layers.
 Double DQN Logic: Improves learning stability.
