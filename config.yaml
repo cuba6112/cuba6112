@@ -1,3 +1,4 @@
+# This Config File is for dqn_snake.py for easy change of configurations.
 environment:
   width: 10
   height: 10
