@@ -1,0 +1,40 @@
+environment:
+  width: 10
+  height: 10
+  max_steps: 1000
+
+rewards:
+  survival: -0.01
+  collision: -1.0
+  food: 1.0
+  closer: 0.1
+  farther: -0.1
+
+agent:
+  memory_capacity: 10000
+  batch_size: 32
+  gamma: 0.99
+  min_replay_size: 1000
+  n_step: 1
+  beta_start: 0.4
+  beta_frames: 100000
+  epsilon_start: 1.0
+  epsilon_final: 0.01
+  epsilon_decay: 100000  # Adjust this value as needed
+
+network:
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  scheduler_step_size: 1000
+  scheduler_gamma: 0.99
+
+prioritized_replay:
+  alpha: 0.6
+
+training:
+  episodes: 10000
+  render_interval: 100
+  eval_interval: 500
+  save_interval: 1000
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.1
