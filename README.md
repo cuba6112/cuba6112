@@ -37,7 +37,11 @@ Running the Code
 Run either of the three script to start training the agent; read paper comparison.txt comparing the two different type of Neural Network:
 
 python dqn_snake.py --> This will train a model and play the Snake game using an Agent that learns through a Deep Q-Neural Network using Machine Learning.
+
+
 python doubledqn_snake.py --> This will train a model and play the Snake game using an Agent using a more complex double-deep Q-Neural Network using Machine Learning. 
+
+
 python qn_snake_game_ai.py ----> This will train a model and play the Snake game using an Agent using a more straightforward, less complex Q-Neural Network, which works well with CPU or GPU. 
 
 Watching the Trained Agent Play
