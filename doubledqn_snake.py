@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+import torch.multiprocessing as mp
 import numpy as np
 import random
 from collections import deque
@@ -49,14 +50,25 @@ class DuelingDQN(nn.Module):
         q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
         return q_values
 
+# Add this new class after the DuelingDQN class
+class EnsembleModel(nn.Module):
+    def __init__(self, models):
+        super().__init__()
+        self.models = nn.ModuleList(models)
+    
+    def forward(self, x):
+        outputs = [model(x) for model in self.models]
+        return torch.mean(torch.stack(outputs), dim=0)
+
 # Snake Game Environment
 class SnakeGame:
-    def __init__(self):
+    def __init__(self, window_id):
+        self.window_id = window_id
         self.display = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption('Snake Game')
+        pygame.display.set_caption(f'Snake Game - GPU {window_id}')
         self.clock = pygame.time.Clock()
         self.reset()
-        self.display_ui = False  # Control whether to display the game UI
+        self.display_ui = True
 
     def reset(self):
         self.direction = 1  # 0: up, 1: right, 2: down, 3: left
@@ -117,6 +129,7 @@ class SnakeGame:
         return False
 
     def _update_ui(self):
+        pygame.display.set_caption(f'Snake Game - GPU {self.window_id}')
         self.display.fill(BLACK)
         for pt in self.snake:
             pygame.draw.rect(self.display, GREEN, pygame.Rect(pt[0], pt[1], BLOCK_SIZE, BLOCK_SIZE))
@@ -249,7 +262,7 @@ class PrioritizedReplayMemory:
 
 # DQN Agent with Double DQN and Prioritized Experience Replay
 class DQNAgent:
-    def __init__(self, state_size, action_size):
+    def __init__(self, state_size, action_size, device):
         self.state_size = state_size
         self.action_size = action_size
         self.memory = PrioritizedReplayMemory(200000)
@@ -261,27 +274,23 @@ class DQNAgent:
         self.batch_size = 128
         self.beta = 0.4  # For importance-sampling weights in PER
         self.beta_increment_per_sampling = 0.001
+        self.device = device
         self.model = DuelingDQN(state_size, 512, action_size).to(device)
         self.target_model = DuelingDQN(state_size, 512, action_size).to(device)
         self.update_target_model()
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=1e-5)
         self.criterion = nn.MSELoss(reduction='none')  # For PER
-        # Multi-GPU support
-        if torch.cuda.device_count() > 1:
-            print(f"Using {torch.cuda.device_count()} GPUs")
-            self.model = nn.DataParallel(self.model)
-            self.target_model = nn.DataParallel(self.target_model)
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
     def remember(self, state, action, reward, next_state, done):
         # Compute TD error for priority
-        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
-        next_state_tensor = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(device)
-        action_tensor = torch.tensor([[action]], dtype=torch.long).to(device)
-        reward_tensor = torch.tensor([reward], dtype=torch.float32).to(device)
-        done_tensor = torch.tensor([done], dtype=torch.float32).to(device)
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
+        next_state_tensor = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(self.device)
+        action_tensor = torch.tensor([[action]], dtype=torch.long).to(self.device)
+        reward_tensor = torch.tensor([reward], dtype=torch.float32).to(self.device)
+        done_tensor = torch.tensor([done], dtype=torch.float32).to(self.device)
 
         current_q = self.model(state_tensor).gather(1, action_tensor)
         with torch.no_grad():
@@ -295,7 +304,7 @@ class DQNAgent:
     def act(self, state, use_epsilon=True):
         if use_epsilon and np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
-        state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
+        state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():
             act_values = self.model(state)
         return torch.argmax(act_values).item()
@@ -307,15 +316,15 @@ class DQNAgent:
         self.beta = np.min([1.0, self.beta + self.beta_increment_per_sampling])
 
         minibatch, indices, weights = self.memory.sample(self.batch_size, self.beta)
-        weights = torch.tensor(weights, dtype=torch.float32).unsqueeze(1).to(device)
+        weights = torch.tensor(weights, dtype=torch.float32).unsqueeze(1).to(self.device)
 
         states, actions, rewards, next_states, dones = zip(*minibatch)
 
-        states = torch.tensor(np.array(states), dtype=torch.float32).to(device)
-        actions = torch.tensor(actions, dtype=torch.long).unsqueeze(1).to(device)
-        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1).to(device)
-        next_states = torch.tensor(np.array(next_states), dtype=torch.float32).to(device)
-        dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1).to(device)
+        states = torch.tensor(np.array(states), dtype=torch.float32).to(self.device)
+        actions = torch.tensor(actions, dtype=torch.long).unsqueeze(1).to(self.device)
+        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1).to(self.device)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float32).to(self.device)
+        dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1).to(self.device)
 
         # Current Q values
         current_q_values = self.model(states).gather(1, actions)
@@ -353,95 +362,184 @@ class DQNAgent:
         self.model.load_state_dict(state_dict)
         self.update_target_model()
 
-def train_dqn():
-    env = SnakeGame()
-    state_size = 13  # Adjusted for additional features
+    def set_device(self, device):
+        self.device = device
+        self.model = self.model.to(device)
+        self.target_model = self.target_model.to(device)
+
+# Modify the train_on_gpu function
+def train_on_gpu(gpu_id, shared_model, num_episodes, return_dict):
+    torch.cuda.set_device(gpu_id)
+    device = torch.device(f'cuda:{gpu_id}')
+    
+    env = SnakeGame(gpu_id)
+    state_size = 13
     action_size = 3
-    agent = DQNAgent(state_size, action_size)
-    n_episodes = 5000  # Increased number of episodes
-    scores = []
-    display_every = 500  # Display the game every 500 episodes
-    model_filename = 'snake_agent.pth'
-
-    # Load existing model if it exists
-    if os.path.isfile(model_filename):
-        agent.load(model_filename)
-        print(f"Loaded existing model '{model_filename}' for retraining.")
-        # Optionally adjust epsilon to allow more exploration
-        agent.epsilon = max(agent.epsilon, 0.1)
-    else:
-        print("No existing model found. Starting training from scratch.")
-
-    for e in range(n_episodes):
+    agent = DQNAgent(state_size, action_size, device)
+    agent.model.load_state_dict(shared_model.state_dict())
+    
+    for e in range(num_episodes):
         state = env.reset()
         total_reward = 0
         done = False
-
-        # Set to True if you want to display this episode
-        render = (e % display_every == 0 and e != 0)
-        env.display_ui = render  # Control UI display based on render
-
+        
         while not done:
             action = agent.act(state)
             next_state, reward, done, score = env.play_step(np.eye(action_size)[action])
-
-            if render:
-                env._update_ui()
-                pygame.time.delay(50)
-
             agent.remember(state, action, reward, next_state, done)
             state = next_state
             total_reward += reward
-
             agent.replay()
-
-        if e % 10 == 0:  # Update target network every 10 episodes
+            
+            # Render the game
+            env._update_ui()
+            pygame.time.delay(50)  # Adjust delay as needed
+        
+        if e % 10 == 0:
             agent.update_target_model()
+        
+        print(f"GPU {gpu_id}, Episode: {e}/{num_episodes}, Score: {score}, Total Reward: {total_reward:.2f}")
+    
+    # Clone the state dict and move it to CPU before returning
+    cpu_state_dict = {k: v.clone().cpu() for k, v in agent.model.state_dict().items()}
+    return_dict[gpu_id] = cpu_state_dict
 
-        if render:
-            pygame.time.delay(500)
-
-        print(f"Episode: {e}/{n_episodes}, Score: {score}, Total Reward: {total_reward:.2f}, Epsilon: {agent.epsilon:.4f}")
-        scores.append(score)
-
-        # Early stopping condition (optional)
-        if e > 100 and np.mean(scores[-100:]) > 50:
-            print(f"Solved in {e} episodes!")
-            break
-
-    # Save the retrained model
-    agent.save(model_filename)
-    print(f"Model saved as '{model_filename}' after training.")
-
-    plt.plot(scores)
-    plt.ylabel('Score')
-    plt.xlabel('Episode')
-    plt.show()
-
-    # After training, play one game with the trained agent
-    play_with_trained_model(env)
-
-def play_with_trained_model(env):
-    # Load the trained model
+# Modify the train_parallel function
+def train_parallel(num_gpus=4, episodes_per_gpu=1200, existing_ensemble=None):
+    mp.set_start_method('spawn', force=True)
+    pygame.init()
+    
     state_size = 13
     action_size = 3
-    agent = DQNAgent(state_size, action_size)
-    agent.load('snake_agent.pth')
-    agent.epsilon = 0.0  # Set epsilon to 0 to disable random actions
+    hidden_size = 512
 
-    state = env.reset()
-    done = False
-    env.display_ui = True  # Ensure UI is displayed during gameplay
+    if existing_ensemble is None:
+        shared_model = DuelingDQN(state_size, hidden_size, action_size)
+    else:
+        shared_model = existing_ensemble.models[0]  # Use the first model from the ensemble as the shared model
+    
+    shared_model.share_memory()
+    
+    processes = []
+    return_dict = mp.Manager().dict()
+    for gpu_id in range(num_gpus):
+        p = mp.Process(target=train_on_gpu, args=(gpu_id, shared_model, episodes_per_gpu, return_dict))
+        p.start()
+        processes.append(p)
+    
+    for p in processes:
+        p.join()
+    
+    # Collect trained models
+    trained_models = []
+    for i in range(num_gpus):
+        if i in return_dict:
+            model = DuelingDQN(state_size, hidden_size, action_size)
+            model.load_state_dict(return_dict[i])
+            trained_models.append(model)
+    
+    # Ensure we have the correct number of models
+    print(f"Number of trained models: {len(trained_models)}")
+    
+    # Create the ensemble model
+    if existing_ensemble is None:
+        ensemble_model = EnsembleModel(trained_models)
+    else:
+        # Update the existing ensemble with new trained models
+        ensemble_model = EnsembleModel([existing_ensemble.models[i] if i < len(existing_ensemble.models) else trained_models[i-len(existing_ensemble.models)] for i in range(num_gpus)])
+    
+    # Save the ensemble model
+    save_ensemble_model(ensemble_model, 'snake_agent_ensemble.pth')
+    print("Parallel training completed. Ensemble model saved as 'snake_agent_ensemble.pth'")
 
-    while not done:
-        action = agent.act(state, use_epsilon=False)
-        next_state, reward, done, score = env.play_step(np.eye(agent.action_size)[action])
-        state = next_state
-        env._update_ui()
-        pygame.time.delay(50)  # Slow down the game to make it visible
+    return ensemble_model
 
-    print(f"Game Over. Final Score: {score}")
-    pygame.time.delay(2000)  # Wait for 2 seconds before closing
+# Add this new function after the EnsembleModel class
+def save_ensemble_model(ensemble_model, filename):
+    torch.save({
+        'state_dict': ensemble_model.state_dict(),
+        'num_models': len(ensemble_model.models),
+        'state_size': 13,
+        'hidden_size': 512,
+        'action_size': 3
+    }, filename)
 
+def load_ensemble_model(filename):
+    checkpoint = torch.load(filename)
+    print(f"Loaded checkpoint keys: {checkpoint.keys()}")
+    
+    if 'state_dict' in checkpoint:
+        # New format
+        state_size = checkpoint.get('state_size', 13)
+        hidden_size = checkpoint.get('hidden_size', 512)
+        action_size = checkpoint.get('action_size', 3)
+        num_models = checkpoint.get('num_models', 4)
+        print(f"Loading ensemble with {num_models} models")
+    else:
+        # Old format (assuming it's just the state dict)
+        print("Old format detected, using default values")
+        state_size, hidden_size, action_size = 13, 512, 3
+        num_models = 4  # Assuming 4 GPUs were used
+    
+    if num_models == 0:
+        raise ValueError("Cannot create an ensemble with 0 models")
+    
+    models = [DuelingDQN(state_size, hidden_size, action_size) for _ in range(num_models)]
+    ensemble = EnsembleModel(models)
+    
+    if 'state_dict' in checkpoint:
+        ensemble.load_state_dict(checkpoint['state_dict'])
+    else:
+        ensemble.load_state_dict(checkpoint)
+    
+    return ensemble
+
+def test_ensemble_model(ensemble_model, num_games=5):
+    env = SnakeGame(window_id=0)  # We'll use a single window for testing
+    state_size = 13
+    action_size = 3
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ensemble_model.to(device)
+
+    for game in range(num_games):
+        state = env.reset()
+        done = False
+        score = 0
+        while not done:
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+            with torch.no_grad():
+                action_values = ensemble_model(state_tensor)
+            action = torch.argmax(action_values).item()
+            next_state, reward, done, game_score = env.play_step(np.eye(action_size)[action])
+            state = next_state
+            score += reward
+
+            env._update_ui()
+            pygame.time.delay(50)  # Adjust delay for visualization speed
+
+        print(f"Game {game + 1}: Score = {game_score}")
+    
+    pygame.quit()
+
+# Modify the main block to use the test_ensemble_model function
 if __name__ == "__main__":
-    train_dqn()
+    num_gpus = 4  # Set to 4 for NVIDIA A6000 Ada GPUs
+    print(f"Training on {num_gpus} GPUs")
+
+    # Check if a saved model exists
+    if os.path.exists('snake_agent_ensemble.pth'):
+        print("Loading existing ensemble model for retraining...")
+        existing_ensemble = load_ensemble_model('snake_agent_ensemble.pth')
+        ensemble_model = train_parallel(num_gpus, existing_ensemble=existing_ensemble)
+    else:
+        print("No existing model found. Starting training from scratch...")
+        ensemble_model = train_parallel(num_gpus)
+
+    # Add debugging prints
+    print(f"Ensemble model created with {len(ensemble_model.models)} models")
+    for i, model in enumerate(ensemble_model.models):
+        print(f"Model {i}: {type(model)}")
+
+    # Test the ensemble model
+    print("Testing the trained ensemble model...")
+    test_ensemble_model(ensemble_model)
